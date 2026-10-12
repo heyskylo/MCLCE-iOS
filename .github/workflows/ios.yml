@@ -31,7 +31,7 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
-          token: ${{ secrets.VAULT_TOKEN }}
+          # token not needed for public submodules in this fork
 
       - name: Select Xcode
         run: |
