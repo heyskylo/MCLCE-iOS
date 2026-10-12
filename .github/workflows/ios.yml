@@ -29,9 +29,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
           fetch-depth: 1
-          # token not needed for public submodules in this fork
 
       - name: Select Xcode
         run: |

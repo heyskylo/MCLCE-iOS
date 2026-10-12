@@ -32,9 +32,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
           fetch-depth: 1
-          token: ${{ secrets.VAULT_TOKEN }}
+          
 
       - name: Install glslang and spirv-cross
         run: |
