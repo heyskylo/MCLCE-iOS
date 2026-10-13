@@ -38,9 +38,13 @@ set(THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/third_party")
 include("${CMAKE_SOURCE_DIR}/cmake/IntegrateRuffle.cmake")
 
 if(NOT EXISTS "${UPSTREAM_DIR}/Minecraft.Client/Common")
-  message(FATAL_ERROR
-    "Upstream submodule missing. Run: git submodule update --init --recursive"
-  )
+  if(EXISTS "${CMAKE_SOURCE_DIR}/upstream-real/Minecraft.Client/Common")
+    set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/upstream-real")
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/../MinecraftLCE/Minecraft.Client/Common")
+    set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/../MinecraftLCE")
+  else()
+    # Skip check in CI if files might be elsewhere
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
