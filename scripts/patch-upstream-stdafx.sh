@@ -55,7 +55,7 @@ done
 
 if grep -q '__APPLE_IOS__' "$STDAFX" && grep -q '__APPLE_IOS__' "$FILEHEADER" && grep -q '__APPLE_IOS__' "$ARRWITHLEN" && grep -q '__APPLE_IOS__' "$DOSCPP" && grep -q '__APPLE_IOS__' "$DISCPP" && grep -q '__APPLE_IOS__' "$COMPCPP" && grep -q '__APPLE_IOS__' "$LEVELH" && grep -q '__APPLE_IOS__' "$CLIENT_STDAFX" && grep -q '__APPLE_IOS__' "$SNDENG" && grep -q '__APPLE_IOS__' "$STRHLP" && grep -q 'ChunkSource\.h' "$LDATAC"; then
     echo "patch-upstream-stdafx: iOS branches already present in all files, nothing to do"
-    exit 0
+    # skip
 fi
 
 # Wrap the entire body of upstream's stdafx.h in `#ifndef __APPLE_IOS__`
