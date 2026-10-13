@@ -29,7 +29,7 @@ endif()
 # ---------------------------------------------------------------------------
 set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/upstream")
 if(NOT EXISTS "${UPSTREAM_DIR}/Minecraft.Client/Common")
-  set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/MinecraftLCE")
+  set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/upstream-real")
 endif()
 set(IOS_PLATFORM_DIR "${CMAKE_SOURCE_DIR}/Minecraft.Client/iOS")
 set(THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/third_party")
