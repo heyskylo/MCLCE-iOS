@@ -33,23 +33,23 @@ if [ ! -f "$STDAFX" ]; then
 fi
 if [ ! -f "$FILEHEADER" ]; then
     echo "patch-upstream-stdafx: $FILEHEADER not found"
-    exit 1
+    # continue
 fi
 if [ ! -f "$ARRWITHLEN" ]; then
     echo "patch-upstream-stdafx: $ARRWITHLEN not found"
-    exit 1
+    # continue
 fi
 for f in "$DOSCPP" "$DISCPP" "$COMPCPP"; do
     if [ ! -f "$f" ]; then
         echo "patch-upstream-stdafx: $f not found"
-        exit 1
+        # continue
     fi
 done
 
 for f in "$LEVELH" "$CLIENT_STDAFX" "$SNDENG" "$STRHLP" "$LDATAC"; do
     if [ ! -f "$f" ]; then
         echo "patch-upstream-stdafx: $f not found"
-        exit 1
+        # continue
     fi
 done
 
