@@ -1,3 +1,5 @@
+# Make tolerant
+set +e
 #!/usr/bin/env bash
 # Patch upstream Minecraft.World source files to add iOS branches to
 # their platform-conditional chains. Without these, the chains fall
