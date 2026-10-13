@@ -28,13 +28,6 @@ endif()
 # Paths
 # ---------------------------------------------------------------------------
 set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/upstream")
-if(NOT EXISTS "${UPSTREAM_DIR}/Minecraft.Client/Common")
-  if(EXISTS "${CMAKE_SOURCE_DIR}/gamecode/Minecraft.Client/Common")
-    set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/gamecode")
-  else()
-    set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/upstream-real")
-  endif()
-endif()
 set(IOS_PLATFORM_DIR "${CMAKE_SOURCE_DIR}/Minecraft.Client/iOS")
 set(THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/third_party")
 
@@ -42,13 +35,10 @@ set(THIRD_PARTY_DIR "${CMAKE_SOURCE_DIR}/third_party")
 include("${CMAKE_SOURCE_DIR}/cmake/IntegrateRuffle.cmake")
 
 if(NOT EXISTS "${UPSTREAM_DIR}/Minecraft.Client/Common")
-  if(EXISTS "${CMAKE_SOURCE_DIR}/upstream-real/Minecraft.Client/Common")
-    set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/upstream-real")
-  elseif(EXISTS "${CMAKE_SOURCE_DIR}/../MinecraftLCE/Minecraft.Client/Common")
-    set(UPSTREAM_DIR "${CMAKE_SOURCE_DIR}/../MinecraftLCE")
-  else()
-    # Skip check in CI if files might be elsewhere
-  endif()
+  message(FATAL_ERROR
+    "Upstream game sources missing at ${UPSTREAM_DIR}. "
+    "This fork vendors them under upstream/."
+  )
 endif()
 
 # ---------------------------------------------------------------------------
