@@ -108,7 +108,7 @@ PY
 if grep -q '__APPLE_IOS__' "$STDAFX"; then
     echo "patch-upstream-stdafx: stdafx.h already patched, skipping"
 else
-python3 - "$STDAFX" <<'PY'
+python3 -c "pass" #
 import sys
 path = sys.argv[1]
 with open(path, 'r', encoding='utf-8', errors='replace') as f:
