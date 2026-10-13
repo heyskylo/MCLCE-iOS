@@ -29,8 +29,7 @@ STRHLP="$REPO_ROOT/upstream/Minecraft.World/StringHelpers.cpp"
 LDATAC="$REPO_ROOT/upstream/Minecraft.World/LevelData.cpp"
 
 if [ ! -f "$STDAFX" ]; then
-    echo "patch-upstream-stdafx: $STDAFX not found"
-    exit 1
+    echo "patch-upstream-stdafx: $STDAFX not found - continuing"
 fi
 if [ ! -f "$FILEHEADER" ]; then
     echo "patch-upstream-stdafx: $FILEHEADER not found"
