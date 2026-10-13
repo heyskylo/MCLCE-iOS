@@ -12,6 +12,10 @@
 #include "../Minecraft.World/compression.h"
 #include "../Minecraft.World/OldChunkStorage.h"
 #include "../Minecraft.World/Tile.h"
+#ifdef __APPLE_IOS__
+#include <unordered_map>
+#include <deque>
+#endif
 
 ServerChunkCache::ServerChunkCache(ServerLevel *level, ChunkStorage *storage, ChunkSource *source)
 {
@@ -969,6 +973,29 @@ bool ServerChunkCache::tick()
 						int idx = ix * XZSIZE + iz;
 						m_unloadedCache[idx] = chunk;
 						cache[idx] = nullptr;
+#ifdef __APPLE_IOS__
+						/* MCLE_iOS_UNLOADED_EVICT: bound m_unloadedCache, LRU evict */
+						{
+							static std::unordered_map<ServerChunkCache*, std::deque<int>> _evictQ;
+							static std::unordered_map<ServerChunkCache*, int> _evictCount;
+							constexpr size_t MCLE_UNLOADED_CACHE_MAX = 256;
+							auto &q = _evictQ[this];
+							q.push_back(idx);
+							while (q.size() > MCLE_UNLOADED_CACHE_MAX) {
+								int oldIdx = q.front();
+								q.pop_front();
+								if (m_unloadedCache[oldIdx]) {
+									delete m_unloadedCache[oldIdx];
+									m_unloadedCache[oldIdx] = nullptr;
+									int &n = _evictCount[this];
+									if (n == 0 || n % 64 == 0) {
+										app.DebugPrintf("MCLE_iOS_UNLOADED_EVICT cache=%p evicted=%d qsize=%zu", this, n, q.size());
+									}
+									n++;
+								}
+							}
+						}
+#endif
 					}
 				}
 				m_toDrop.pop_front();

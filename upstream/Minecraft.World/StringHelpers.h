@@ -24,7 +24,6 @@ template <class T> T _fromHEXString(const std::wstring& s)
 
 wstring convStringToWstring(const string& converting);
 inline wstring convStringToWstring(const wchar_t *s) { return s ? wstring(s) : wstring(); }
-inline wstring convStringToWstring(const wchar_t *s) { return s ? wstring(s) : wstring(); }
 const char *wstringtofilename(const wstring& name);
 const char *wstringtochararray(const wstring& name);
 wstring filenametowstring(const char *name);

@@ -1,4 +1,8 @@
 #include "stdafx.h"
+#ifdef __APPLE_IOS__
+extern "C" void mcle_alloc_inc(int tag);
+extern "C" void mcle_alloc_dec(int tag);
+#endif
 #include "net.minecraft.world.level.biome.h"
 #include "net.minecraft.world.level.chunk.h"
 #include "net.minecraft.world.level.dimension.h"
@@ -12,6 +16,9 @@
 
 Region::~Region()
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_dec(0);
+#endif
 	for(unsigned int i = 0; i < chunks->length; ++i)
 	{
 		LevelChunkArray *lca = (*chunks)[i];
@@ -30,6 +37,9 @@ Region::~Region()
 
 Region::Region(Level *level, int x1, int y1, int z1, int x2, int y2, int z2, int r)
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_inc(0); // MCLE_LEAK_REGION
+#endif
 	this->level = level;
 
 	xc1 = (x1 - r) >> 4;

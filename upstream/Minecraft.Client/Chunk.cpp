@@ -432,7 +432,7 @@ void Chunk::rebuild()
 						if (currentLayer == 0 && tile->isEntityTile())
 						{
 							shared_ptr<TileEntity> et = region->getTileEntity(x, y, z);
-							if (TileEntityRenderDispatcher::instance->hasRenderer(et))
+							if (TileEntityRenderDispatcher::instance && TileEntityRenderDispatcher::instance->hasRenderer(et)) /* MCLE_iOS_TERD_NULL */
 							{
 								renderableTileEntities.push_back(et);
 							}
@@ -771,7 +771,7 @@ void Chunk::rebuild_SPU()
                         if (currentLayer == 0 && Tile::tiles[tileId] && Tile::tiles[tileId]->isEntityTile())
 						{
 							shared_ptr<TileEntity> et = region.getTileEntity(x, y, z);
-							if (TileEntityRenderDispatcher::instance->hasRenderer(et))
+							if (TileEntityRenderDispatcher::instance && TileEntityRenderDispatcher::instance->hasRenderer(et)) /* MCLE_iOS_TERD_NULL */
 							{
 								renderableTileEntities.push_back(et);
 							}

@@ -1,4 +1,11 @@
 #include "stdafx.h"
+#ifdef __APPLE_IOS__
+extern "C" void mcle_alloc_inc(int tag);
+extern "C" void mcle_alloc_dec(int tag);
+#endif
+#ifdef __APPLE_IOS__
+#include <atomic>
+#endif
 #include "System.h"
 #include "net.minecraft.world.entity.h"
 #include "net.minecraft.world.level.h"
@@ -130,6 +137,9 @@ void LevelChunk::init(Level *level, int x, int z)
 // This ctor is used for loading a save into
 LevelChunk::LevelChunk(Level *level, int x, int z)
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_inc(2); // MCLE_LEAK_LC
+#endif
 	init(level, x, z);
 	lowerBlocks = new CompressedTileStorage();
 	lowerData = nullptr;
@@ -162,6 +172,9 @@ LevelChunk::LevelChunk(Level *level, int x, int z)
 // to be deleted after calling this ctor.
 LevelChunk::LevelChunk(Level *level, byteArray blocks, int x, int z)
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_inc(2); // MCLE_LEAK_LC
+#endif
 	init(level, x, z);
 
 	// We'll be creating this as "empty" when this ctor is called on the client, as a result of a chunk becoming visible (but we don't have the data yet for it).
@@ -215,6 +228,9 @@ LevelChunk::LevelChunk(Level *level, byteArray blocks, int x, int z)
 // The original version this is shared from owns all the data that is shared into this copy, so it isn't deleted in the dtor.
 LevelChunk::LevelChunk(Level *level, int x, int z, LevelChunk *lc)
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_inc(2); // MCLE_LEAK_LC
+#endif
 	init(level, x, z);
 
 	// 4J Stu - Copy over the biome data
@@ -430,6 +446,9 @@ void LevelChunk::startSharingTilesAndData(int forceMs)
 
 LevelChunk::~LevelChunk()
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_dec(2);
+#endif
 #ifdef SHARING_ENABLED
 	if( !sharingTilesAndData )
 #endif
@@ -1197,7 +1216,10 @@ void LevelChunk::addEntity(shared_ptr<Entity> e)
 	int zc = Mth::floor(e->z / 16);
 	if (xc != this->x || zc != this->z)
 	{
-		app.DebugPrintf("Wrong location!");
+		// MCLE_WL_THROTTLE: first 16 only, then silent count.
+		static std::atomic<int> _wlCount{0};
+		const int _n = _wlCount.fetch_add(1, std::memory_order_relaxed);
+		if (_n < 16) app.DebugPrintf("Wrong location! (occurrence %d)", _n);
 		//        System.out.println("Wrong location! " + e);
 		//        Thread.dumpStack();
 	}

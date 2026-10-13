@@ -1,4 +1,8 @@
 #include "stdafx.h"
+#ifdef __APPLE_IOS__
+extern "C" void mcle_alloc_inc(int tag);
+extern "C" void mcle_alloc_dec(int tag);
+#endif
 
 #include "TileRenderer.h"
 #include "GameRenderer.h"
@@ -144,6 +148,9 @@ int TileRenderer::getLightColor( Tile *tt, LevelSource *level, int x, int y, int
 
 TileRenderer::TileRenderer( LevelSource* level, int xMin, int yMin, int zMin, unsigned char *tileIds )
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_inc(1); // MCLE_LEAK_TR
+#endif
 	this->level = level;
 	_init();
 	this->xMin = xMin;
@@ -159,17 +166,26 @@ TileRenderer::TileRenderer( LevelSource* level, int xMin, int yMin, int zMin, un
 
 TileRenderer::~TileRenderer()
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_dec(1);
+#endif
 	delete cache;
 }
 
 TileRenderer::TileRenderer( LevelSource* level )
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_inc(1); // MCLE_LEAK_TR
+#endif
 	this->level = level;
 	_init();
 }
 
 TileRenderer::TileRenderer()
 {
+#ifdef __APPLE_IOS__
+	mcle_alloc_inc(1); // MCLE_LEAK_TR
+#endif
 	this->level = nullptr;
 	_init();
 }

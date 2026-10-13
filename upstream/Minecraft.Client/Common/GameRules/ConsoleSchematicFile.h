@@ -6,7 +6,6 @@ using namespace std;
 
 #include "../../../Minecraft.World/ArrayWithLength.h"
 #include "../../../Minecraft.World/compression.h"  // Compression::ECompressionTypes
-#include "../../../Minecraft.World/compression.h"  // Compression::ECompressionTypes
 
 class Level;
 class DataOutputStream;

@@ -389,7 +389,7 @@ HRESULT Compression::DecompressRLE(void *pDestination, unsigned int *pDestSize, 
 HRESULT Compression::Compress(void *pDestination, unsigned int *pDestSize, void *pSource, unsigned int SrcSize)
 {
 	// Using zlib for x64 compression - 360 is using native 360 compression and PS3 a stubbed non-compressing version of this
-#if defined __ORBIS__ || defined _DURANGO || defined _WIN64 || defined __PSVITA__ || defined __APPLE_IOS__ || defined __APPLE_IOS__
+#if defined __ORBIS__ || defined _DURANGO || defined _WIN64 || defined __PSVITA__ || defined __APPLE_IOS__
 	SIZE_T destSize = (SIZE_T)(*pDestSize);
 	const int res = ::compress(static_cast<Bytef *>(pDestination), (uLongf *)&destSize, static_cast<Bytef *>(pSource), SrcSize);
 	*pDestSize = static_cast<unsigned int>(destSize);
@@ -417,7 +417,7 @@ HRESULT Compression::Decompress(void *pDestination, unsigned int *pDestSize, voi
 	}
 
 	// Using zlib for x64 compression - 360 is using native 360 compression and PS3 a stubbed non-compressing version of this
-#if defined __ORBIS__ || defined _DURANGO || defined _WIN64 || defined __PSVITA__ || defined __APPLE_IOS__ || defined __APPLE_IOS__
+#if defined __ORBIS__ || defined _DURANGO || defined _WIN64 || defined __PSVITA__ || defined __APPLE_IOS__
 	SIZE_T destSize = (SIZE_T)(*pDestSize);
 	const int res = ::uncompress(static_cast<Bytef *>(pDestination), (uLongf *)&destSize, static_cast<Bytef *>(pSource), SrcSize);
 	*pDestSize = static_cast<unsigned int>(destSize);

@@ -35,7 +35,8 @@ for f in "$STDAFX" "$FILEHEADER" "$ARRWITHLEN" "$DOSCPP" "$DISCPP" "$COMPCPP" "$
 done
 
 if grep -q '__APPLE_IOS__' "$STDAFX" 2>/dev/null && grep -q '__APPLE_IOS__' "$FILEHEADER" && grep -q '__APPLE_IOS__' "$ARRWITHLEN" && grep -q '__APPLE_IOS__' "$DOSCPP" && grep -q '__APPLE_IOS__' "$DISCPP" && grep -q '__APPLE_IOS__' "$COMPCPP" && grep -q '__APPLE_IOS__' "$LEVELH" && grep -q '__APPLE_IOS__' "$CLIENT_STDAFX" && grep -q '__APPLE_IOS__' "$SNDENG" && grep -q '__APPLE_IOS__' "$STRHLP" && grep -q 'ChunkSource\.h' "$LDATAC"; then
-    echo "patch-upstream-stdafx: iOS branches already present in all files, continuing with helper patches"
+    echo "patch-upstream-stdafx: iOS branches already present in all files, nothing to do"
+    exit 0
 fi
 
 # Wrap the entire body of upstream's stdafx.h in `#ifndef __APPLE_IOS__`
@@ -1233,7 +1234,7 @@ fi
 # Minecraft.cpp passes a const wchar_t* (from ProfileManager.GetGamertag);
 # add the wchar_t* overload so the call resolves on iOS.
 SHHDR="$REPO_ROOT/upstream/Minecraft.World/StringHelpers.h"
-if [ -f "$SHHDR" ] && ! grep -q 'convStringToWstring\(const wchar_t' "$SHHDR"; then
+if [ -f "$SHHDR" ] && ! grep -q 'convStringToWstring(const wchar_t' "$SHHDR"; then
     python3 - "$SHHDR" <<'PY'
 import sys
 path = sys.argv[1]

@@ -1,4 +1,7 @@
 #include "stdafx.h"
+#ifdef __APPLE_IOS__
+extern "C" void mcle_install_sig_altstack(void); // MCLE_WORKER_ALTSTACK
+#endif
 #include "LevelRenderer.h"
 #include "Textures.h"
 #include "TextureAtlas.h"
@@ -3779,6 +3782,9 @@ void LevelRenderer::staticCtor()
 
 int LevelRenderer::rebuildChunkThreadProc(LPVOID lpParam)
 {
+#ifdef __APPLE_IOS__
+	mcle_install_sig_altstack();
+#endif
 	Vec3::CreateNewThreadStorage();
 	AABB::CreateNewThreadStorage();
 	IntCache::CreateNewThreadStorage();
