@@ -33,6 +33,7 @@
 #include <chrono>
 #include <exception>
 #include <memory>
+#include <utility>
 #include <typeinfo>
 #include <string>
 #include <vector>
@@ -84,6 +85,7 @@ extern "C" void mcle_world_g1b_probe_tick(void);
 #include "../../../upstream/Minecraft.World/LevelData.h"
 #include "../../../upstream/Minecraft.World/LevelSettings.h"
 #include "../../../upstream/Minecraft.World/LevelType.h"
+#include "../../../upstream/Minecraft.World/ChunkSource.h"
 #include "../../../upstream/Minecraft.World/MaterialColor.h"
 #include "../../../upstream/Minecraft.World/Material.h"
 #include "../../../upstream/Minecraft.World/Recipes.h"
@@ -275,6 +277,16 @@ pthread_t                     g_simThread{};
 // Auto-save flag - file-scope so the detached save thread can clear it.
 std::atomic<bool>             g_autoSaveInFlight{ false };
 
+// World-build request queue. The app (main thread) records what the user
+// picked in the world list; the first tick's bootstrap (or a later tick,
+// once idle) turns that request into a build. Mode + argument are captured
+// before the build thread starts so there is no cross-thread race on the
+// argument string.
+enum WorldBuildMode { kBuildNone = 0, kBuildLoad = 1, kBuildCreate = 2 };
+std::atomic<int>              g_pendingMode{ kBuildNone };
+std::wstring                  g_pendingArg;   // levelId (load) or world name (create)
+std::atomic<bool>             g_buildInFlight{ false };
+
 // Body of the on-demand save - runs on whichever pthread we hand it to.
 // Walks levels in reverse to mirror upstream MinecraftServer::saveAllLevels
 // and logs start/per-level/done so we can see exactly how far we got if
@@ -385,65 +397,52 @@ std::string narrow(const std::wstring &w) {
     return out;
 }
 
-void initImpl() {
-    MCLE_LOG("mcle_game_init: starting");
+// Per-thread TLS singletons. Must run on every thread that touches the
+// world (bootstrap thread, menu-triggered build thread, sim thread, render
+// thread). thread_local-guarded so repeat calls on the same thread are
+// cheap no-ops.
+void initThreadTLS() {
+    thread_local bool s_tlsReady = false;
+    if (s_tlsReady) return;
+    s_tlsReady = true;
 
-    // Per-platform bootstrap (Windows64_Minecraft.cpp, Xbox_Minecraft.cpp,
-    // ServerMain.cpp, etc.) all call this on first thread entry. Without
-    // it, Compression::getCompression() returns garbage from TLS slot 0
-    // and Decompress is a silent no-op - which leaves saveData.ms's
-    // decompressed body empty and prepareLevel falls into the no-level.dat
-    // branch.
+    // Compression::getCompression() returns garbage from TLS slot 0 unless
+    // this runs - Decompress becomes a silent no-op, leaving saveData.ms's
+    // decompressed body empty.
     Compression::CreateNewThreadStorage();
-
-    // Mark this thread as the server thread so Entity ctor allocates
-    // small (network-trackable, < 16384) IDs for entities. Without this
-    // every Entity gets an id >= 16384 and EntityTracker::addEntity
+    // Mark this thread as a server thread so Entity ctor allocates small
+    // (network-trackable, < 16384) ids. Without it EntityTracker::addEntity
     // hits __debugbreak().
     Entity::useSmallIds();
-
     // Tile::setShape needs TLS-owned ThreadStorage on every thread that
-    // touches the world. Bootstrap thread first, render thread on its
-    // first tick (see mcle_game_tick).
+    // touches the world.
     Tile::CreateNewThreadStorage();
-    MCLE_LOG("mcle_game_init: Tile::CreateNewThreadStorage done");
-
-    // Tesselator is also TLS-singleton (see Tesselator.cpp:27, :34).
-    // LevelRenderer ctor + every renderer path uses Tesselator::getInstance()
-    // which derefs the TLS slot. Without this it's null and all upstream
-    // renderer code silently null-derefs (or no-ops if behind null guards).
-    // 16 KB matches the size upstream platform mains pass.
+    // Tesselator is a TLS-singleton; LevelRenderer ctor + every renderer
+    // path derefs it. 16 KB matches upstream platform mains.
     Tesselator::CreateNewThreadStorage(16 * 1024);
-    MCLE_LOG("mcle_game_init: Tesselator::CreateNewThreadStorage done");
-
-    // Vec3 is also TLS-singleton (see Vec3.cpp:19). Vec3::newTemp() is
-    // used liberally throughout the renderer (Level::getSkyColor,
-    // getCloudColor, getSunriseColor, ...) and reads tls->pool[idx]. If
-    // unset on this thread, deref produces a corrupt-pointer-shaped
-    // SIGSEGV (which was the G3e crash inside Level::getSkyColor).
+    // Vec3 is a TLS-singleton used by Level::getSkyColor / getCloudColor /
+    // getSunriseColor; a null slot produces a corrupt-pointer SIGSEGV.
     Vec3::CreateNewThreadStorage();
-    MCLE_LOG("mcle_game_init: Vec3::CreateNewThreadStorage done");
-
-    // IntCache is per-thread TLS too. BiomeSource::getRawBiomeBlock and
-    // every Layer::getArea path reads tls->toosmall at offset 0x68; if
-    // CreateNewThreadStorage hasn't been called the deref crashes at
-    // 0x68 (the chunk preload (16,15) crash for procgen).
+    // IntCache is per-thread; BiomeSource::getRawBiomeBlock and every
+    // Layer::getArea path reads it during procgen.
     IntCache::CreateNewThreadStorage();
-    MCLE_LOG("mcle_game_init: IntCache::CreateNewThreadStorage done");
-
-    // The remaining TLS singletons Win64_Minecraft.cpp:1288-1295 sets up.
-    // AABB used by entity collision; OldChunkStorage used by saveData.ms
-    // legacy load path; Level lighting cache used by chunk lighting +
-    // post-process. Missing these can cause 0x128 / similar offsets in
-    // procgen for chunks that exercise structure features or lighting.
+    // AABB (entity collision), OldChunkStorage (legacy save load), Level
+    // lighting cache (chunk lighting + post-process), Chunk.
     AABB::CreateNewThreadStorage();
-    MCLE_LOG("mcle_game_init: AABB::CreateNewThreadStorage done");
     OldChunkStorage::CreateNewThreadStorage();
-    MCLE_LOG("mcle_game_init: OldChunkStorage::CreateNewThreadStorage done");
     Level::enableLightingCache();
-    MCLE_LOG("mcle_game_init: Level::enableLightingCache done");
     Chunk::CreateNewThreadStorage();
-    MCLE_LOG("mcle_game_init: Chunk::CreateNewThreadStorage done");
+    MCLE_LOG("initThreadTLS: done on this thread");
+}
+
+// Forward decls for the world-construction split (defined below initImpl).
+LevelSettings *openExistingWorldStorage(const std::wstring &requestedLevelId);
+LevelSettings *createNewWorldStorage(const std::wstring &worldName);
+void buildWorld(int buildMode, std::wstring buildArg);
+
+void initImpl() {
+    MCLE_LOG("mcle_game_init: starting");
+    initThreadTLS();
 
     // Parity-correct upstream static init order, mirroring
     // Minecraft.World.cpp's MinecraftWorld_RunStaticCtors at lines 30-79.
@@ -517,6 +516,31 @@ void initImpl() {
     }
     MCLE_LOG("mcle_game_init: level source constructed at %p", (void*)g_levelSource);
 
+    // One-time setup is done. If the app queued a world request before the
+    // first tick, honour it now; otherwise idle so the SWF menu drives world
+    // selection via mcle_world_request_create / mcle_world_request_load.
+    int pendingMode = g_pendingMode.exchange(kBuildNone);
+    if (pendingMode != kBuildNone) {
+        buildWorld(pendingMode, g_pendingArg);
+    } else {
+        MCLE_LOG("mcle_game_init: no world requested, simulation idle");
+        g_initState = kStateReadyIdle;
+    }
+}
+
+// Load a world from Documents/saves/<levelId>. An empty levelId falls back
+// to the first save (legacy auto-load). Returns the LevelSettings for the
+// shared downstream construction, or null on failure.
+LevelSettings *openExistingWorldStorage(const std::wstring &requestedLevelId) {
+    initThreadTLS();
+
+    const char *saveRootC = StorageManager.GetSaveRootPath();
+    if (!saveRootC || !*saveRootC) {
+        MCLE_LOG("openExistingWorldStorage: GetSaveRootPath empty");
+        return nullptr;
+    }
+    std::wstring savesDir = widen(saveRootC) + L"/saves";
+
     // Step 2: enumerate saves. Upstream's DirectoryLevelStorageSource::
     // getLevelList() body is `#if 0`'d (Xbox saves enumerated differently),
     // so we list Documents/saves/ ourselves via File::listFiles. Each
@@ -526,15 +550,17 @@ void initImpl() {
         File savesRoot(savesDir);
         std::vector<File *> *children = savesRoot.listFiles();
         int candidateCount = children ? static_cast<int>(children->size()) : 0;
-        MCLE_LOG("mcle_game_init: Documents/saves listed %d entries", candidateCount);
+        MCLE_LOG("openExistingWorldStorage: Documents/saves listed %d entries", candidateCount);
         if (children) {
-            int idx = 0;
             for (File *child : *children) {
-                if (!child) { ++idx; continue; }
+                if (!child) continue;
+                if (!child->isDirectory()) continue;
                 std::wstring nm = child->getName();
-                MCLE_LOG("mcle_game_init: saves[%d] = %{public}s (%zu wchars, isDir=%d)",
-                         idx++, narrow(nm).c_str(), nm.size(), child->isDirectory() ? 1 : 0);
-                if (levelId.empty() && child->isDirectory()) {
+                MCLE_LOG("openExistingWorldStorage: save dir = %{public}s",
+                         narrow(nm).c_str());
+                if (!requestedLevelId.empty()) {
+                    if (nm == requestedLevelId) levelId = nm;
+                } else if (levelId.empty()) {
                     levelId = nm;
                 }
             }
@@ -544,9 +570,9 @@ void initImpl() {
     }
 
     if (levelId.empty()) {
-        MCLE_LOG("mcle_game_init: no saves available, simulation idle");
-        g_initState = kStateReadyIdle;
-        return;
+        MCLE_LOG("openExistingWorldStorage: no matching save (requested='%{public}s')",
+                 narrow(requestedLevelId).c_str());
+        return nullptr;
     }
     MCLE_LOG("mcle_game_init: selected level id = %{public}s", narrow(levelId).c_str());
 
@@ -575,7 +601,7 @@ void initImpl() {
     if (saveDataPath.empty()) {
         MCLE_LOG("mcle_game_init: no .ms bundle in save folder, idling");
         g_initState = kStateReadyIdle;
-        return;
+        return nullptr;
     }
     File saveDataFile(saveDataPath);
     int64_t saveSize = saveDataFile.length();
@@ -583,7 +609,7 @@ void initImpl() {
         MCLE_LOG("mcle_game_init: .ms missing or empty (%lld bytes)",
                  (long long)saveSize);
         g_initState = kStateFailed;
-        return;
+        return nullptr;
     }
     MCLE_LOG("mcle_game_init: .ms bundle = %{public}s, size = %lld bytes",
              narrow(saveDataPath).c_str(), (long long)saveSize);
@@ -596,7 +622,7 @@ void initImpl() {
     } catch (const std::exception &e) {
         MCLE_LOG("mcle_game_init: saveData.ms read threw: %{public}s", e.what());
         g_initState = kStateFailed;
-        return;
+        return nullptr;
     }
     if (saveBytes.length >= 16 && saveBytes.data) {
         unsigned char *b = (unsigned char *)saveBytes.data;
@@ -621,12 +647,12 @@ void initImpl() {
     } catch (const std::exception &e) {
         MCLE_LOG("mcle_game_init: ConsoleSaveFileOriginal ctor threw: %{public}s", e.what());
         g_initState = kStateFailed;
-        return;
+        return nullptr;
     }
     if (!g_saveFile) {
         MCLE_LOG("mcle_game_init: ConsoleSaveFileOriginal ctor returned null");
         g_initState = kStateFailed;
-        return;
+        return nullptr;
     }
     g_saveFile->ConvertToLocalPlatform();
     MCLE_LOG("mcle_game_init: saveData.ms parsed at %p", (void*)g_saveFile);
@@ -665,12 +691,12 @@ void initImpl() {
     } catch (const std::exception &e) {
         MCLE_LOG("mcle_game_init: McRegionLevelStorage ctor threw: %{public}s", e.what());
         g_initState = kStateFailed;
-        return;
+        return nullptr;
     }
     if (!g_levelStorage) {
         MCLE_LOG("mcle_game_init: McRegionLevelStorage ctor returned null");
         g_initState = kStateFailed;
-        return;
+        return nullptr;
     }
     MCLE_LOG("mcle_game_init: McRegionLevelStorage at %p", (void*)g_levelStorage.get());
 
@@ -683,26 +709,148 @@ void initImpl() {
     } catch (const std::exception &e) {
         MCLE_LOG("mcle_game_init: prepareLevel threw: %{public}s", e.what());
         g_initState = kStateFailed;
-        return;
+        return nullptr;
     }
     if (!levelData) {
         MCLE_LOG("mcle_game_init: prepareLevel returned null");
         g_initState = kStateFailed;
-        return;
+        return nullptr;
     }
     g_levelName = levelData->getLevelName();
     MCLE_LOG("mcle_game_init: prepareLevel succeeded, name = %{public}s",
              narrow(g_levelName).c_str());
 
     // Step 5: build LevelSettings from the metadata.
-    MCLE_LOG("mcle_game_init: building LevelSettings...");
+    MCLE_LOG("openExistingWorldStorage: building LevelSettings...");
     LevelSettings *settings = nullptr;
     try {
         settings = new LevelSettings(levelData);
-        MCLE_LOG("mcle_game_init: LevelSettings at %p", (void*)settings);
+        MCLE_LOG("openExistingWorldStorage: LevelSettings at %p", (void*)settings);
     } catch (const std::exception &e) {
-        MCLE_LOG("mcle_game_init: LevelSettings ctor threw: %{public}s", e.what());
-        g_initState = kStateFailed;
+        MCLE_LOG("openExistingWorldStorage: LevelSettings ctor threw: %{public}s", e.what());
+        return nullptr;
+    }
+    return settings;
+}
+
+// Create a brand-new world. Builds a clean in-memory save bundle, writes
+// level.dat so Level::_init's prepareLevel() finds a real save, and returns
+// the LevelSettings for the shared downstream construction. Persisting the
+// bundle to disk is a follow-up (the iOS StorageManager save path is not
+// wired yet); the world is playable for this session.
+LevelSettings *createNewWorldStorage(const std::wstring &worldName) {
+    initThreadTLS();
+
+    const char *saveRootC = StorageManager.GetSaveRootPath();
+    if (!saveRootC || !*saveRootC) {
+        MCLE_LOG("createNewWorldStorage: GetSaveRootPath empty");
+        return nullptr;
+    }
+    std::wstring savesDir = widen(saveRootC) + L"/saves";
+
+    // Sanitise the display name into a folder / file id, then uniquify so a
+    // second "New World" becomes "New World 2", etc.
+    std::wstring levelId;
+    for (wchar_t c : worldName) {
+        if (c == L'/' || c == L'\\' || c == L':' || c < 32) levelId.push_back(L'_');
+        else levelId.push_back(c);
+    }
+    if (levelId.empty()) levelId = L"New World";
+    {
+        std::wstring base = levelId;
+        int n = 2;
+        while (File(savesDir + L"/" + levelId).exists()) {
+            levelId = base + L" " + std::to_wstring(n++);
+        }
+    }
+    MCLE_LOG("createNewWorldStorage: name='%{public}s' id='%{public}s'",
+             narrow(worldName).c_str(), narrow(levelId).c_str());
+
+    std::wstring saveFolder = savesDir + L"/" + levelId;
+    try { File(savesDir).mkdirs(); } catch (...) {}
+    try { File(saveFolder).mkdirs(); } catch (...) {}
+
+    std::wstring saveDataPath = saveFolder + L"/" + levelId + L".ms";
+    try {
+        g_saveFile = new ConsoleSaveFileOriginal(
+            saveDataPath,
+            /*pvSaveData*/   nullptr,
+            /*fileSize*/     0,
+            /*forceCleanSave*/ true,
+            /*plat*/         SAVE_FILE_PLATFORM_LOCAL);
+        g_saveFile->ConvertToLocalPlatform();
+    } catch (const std::exception &e) {
+        MCLE_LOG("createNewWorldStorage: save ctor threw: %{public}s", e.what());
+        return nullptr;
+    }
+    if (!g_saveFile) {
+        MCLE_LOG("createNewWorldStorage: save ctor returned null");
+        return nullptr;
+    }
+
+    try {
+        g_levelStorage = std::make_shared<McRegionLevelStorage>(
+            g_saveFile, File(L"."), levelId, /*createPlayerDir*/true);
+    } catch (const std::exception &e) {
+        MCLE_LOG("createNewWorldStorage: storage ctor threw: %{public}s", e.what());
+        return nullptr;
+    }
+    if (!g_levelStorage) {
+        MCLE_LOG("createNewWorldStorage: storage ctor returned null");
+        return nullptr;
+    }
+
+    int64_t seed = static_cast<int64_t>(
+        std::chrono::system_clock::now().time_since_epoch().count());
+#ifdef _LARGE_WORLDS
+    const int xzSize = LEVEL_WIDTH_SMALL;
+    const int hellScale = HELL_LEVEL_SCALE_SMALL;
+#else
+    const int xzSize = LEVEL_MAX_WIDTH;
+    const int hellScale = HELL_LEVEL_MAX_SCALE;
+#endif
+    LevelSettings *settings = nullptr;
+    try {
+        settings = new LevelSettings(seed, GameType::SURVIVAL, true, false, true,
+                                     LevelType::lvl_normal, xzSize, hellScale);
+    } catch (const std::exception &e) {
+        MCLE_LOG("createNewWorldStorage: LevelSettings ctor threw: %{public}s", e.what());
+        return nullptr;
+    }
+    g_levelName = levelId;
+
+    // Write level.dat into the bundle. Level::_init tolerates a missing
+    // level.dat (it creates a fresh LevelData from the settings), but having
+    // it makes the save self-describing for the eventual on-disk write.
+    try {
+        LevelData *freshData = new LevelData(settings, levelId);
+        g_levelStorage->saveLevelData(freshData, nullptr);
+        delete freshData;
+        MCLE_LOG("createNewWorldStorage: level.dat written");
+    } catch (const std::exception &e) {
+        MCLE_LOG("createNewWorldStorage: saveLevelData threw: %{public}s", e.what());
+    } catch (...) {
+        MCLE_LOG("createNewWorldStorage: saveLevelData threw unknown");
+    }
+
+    MCLE_LOG("createNewWorldStorage: ready (seed=%lld, xz=%d, hell=%d)",
+             (long long)seed, xzSize, hellScale);
+    return settings;
+}
+
+// Per-world construction entry. Runs on the bootstrap thread (first tick) or
+// a menu-triggered thread. All one-time statics + the level source are
+// already up by the time this runs.
+void buildWorld(int buildMode, std::wstring buildArg) {
+    initThreadTLS();
+
+    LevelSettings *settings = (buildMode == kBuildCreate)
+        ? createNewWorldStorage(buildArg)
+        : openExistingWorldStorage(buildArg);
+    if (!settings) {
+        MCLE_LOG("buildWorld: construction failed (mode=%d)", buildMode);
+        // Stay idle so the world-list menu remains usable for a retry.
+        g_initState = kStateReadyIdle;
         return;
     }
 
@@ -1268,7 +1416,7 @@ void initImpl() {
         }
     }
 
-    MCLE_LOG("mcle_game_init: initImpl returning");
+    MCLE_LOG("buildWorld: construction complete, ticking enabled");
 }
 
 } // anonymous namespace
@@ -1499,6 +1647,39 @@ extern "C" void mcle_game_tick(void) {
             return nullptr;
         }, nullptr);
         pthread_detach(t);
+    }
+
+    // Menu-driven world build. When the bootstrap finished idle and the app
+    // queued a Create New World / load request, spin up a background build
+    // thread running the same construction the first-tick bootstrap would
+    // have run. g_buildInFlight guards re-entry; subsequent idle ticks find
+    // kBuildNone and fall through to the (no-op) idle path.
+    if (g_initState.load(std::memory_order_acquire) == kStateReadyIdle &&
+        !g_buildInFlight.load(std::memory_order_acquire))
+    {
+        int mode = g_pendingMode.exchange(kBuildNone, std::memory_order_acq_rel);
+        if (mode != kBuildNone) {
+            bool expected = false;
+            if (g_buildInFlight.compare_exchange_strong(expected, true)) {
+                auto *req = new std::pair<int, std::wstring>(mode, g_pendingArg);
+                pthread_t t;
+                int rc = pthread_create(&t, nullptr, [](void *p) -> void * {
+                    auto *r = static_cast<std::pair<int, std::wstring> *>(p);
+                    buildWorld(r->first, r->second);
+                    delete r;
+                    g_buildInFlight.store(false, std::memory_order_release);
+                    return nullptr;
+                }, req);
+                if (rc == 0) {
+                    pthread_detach(t);
+                    MCLE_LOG("mcle_game_tick: world build thread spawned (mode=%d)", mode);
+                } else {
+                    delete req;
+                    g_buildInFlight.store(false, std::memory_order_release);
+                    MCLE_LOG("mcle_game_tick: world build pthread_create failed rc=%d", rc);
+                }
+            }
+        }
     }
 
     // Once init succeeds, spawn the dedicated sim thread (once) and
@@ -2408,6 +2589,34 @@ extern "C" int mcle_world_get_player_pos(float *out_x, float *out_y, float *out_
 // the SWF menu over the world.
 extern "C" int mcle_world_is_ticking(void) {
     return (g_initState == kStateTicking && g_levels[0] != nullptr) ? 1 : 0;
+}
+
+// Queue a "Create New World" request. The next idle tick's bootstrap spins
+// up a build thread that generates a fresh world and starts ticking. Called
+// from the UI layer (main thread). No-op once a world is already running or
+// a build is in flight.
+extern "C" void mcle_world_request_create(const char *worldName) {
+    if (g_initState.load() == kStateTicking) return;
+    if (g_buildInFlight.load()) return;
+    g_pendingArg = (worldName && *worldName) ? widen(worldName) : std::wstring(L"New World");
+    g_pendingMode.store(kBuildCreate);
+    MCLE_LOG("mcle_world_request_create: queued '%{public}s'", narrow(g_pendingArg).c_str());
+}
+
+// Queue a load of Documents/saves/<levelId>. An empty levelId loads the
+// first save found (legacy auto-load).
+extern "C" void mcle_world_request_load(const char *levelId) {
+    if (g_initState.load() == kStateTicking) return;
+    if (g_buildInFlight.load()) return;
+    g_pendingArg = levelId ? widen(levelId) : std::wstring();
+    g_pendingMode.store(kBuildLoad);
+    MCLE_LOG("mcle_world_request_load: queued '%{public}s'", narrow(g_pendingArg).c_str());
+}
+
+// 0 = unstarted, 1 = idle (menu), 2 = ticking, -1 = failed. Lets the UI
+// show a spinner / error while a build is pending.
+extern "C" int mcle_world_build_state(void) {
+    return g_initState.load();
 }
 
 // Route through upstream Level::getSkyColor for full parity with LCE

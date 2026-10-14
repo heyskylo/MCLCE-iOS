@@ -13,6 +13,9 @@
 
 extern "C" void mcle_game_tick(void);  // GameBootstrap.cpp
 extern "C" int  mcle_world_is_ticking(void);  // MCLEGameLoop.cpp
+extern "C" void mcle_world_request_create(const char* worldName);  // MCLEGameLoop.cpp
+extern "C" void mcle_world_request_load(const char* levelId);      // MCLEGameLoop.cpp
+extern "C" int  mcle_world_build_state(void);                      // MCLEGameLoop.cpp
 extern "C" void mcle_render_frame(void);      // RND_iOS_Metal.mm
 
 // Name of the currently loaded menu SWF, set whenever we enter a
@@ -88,6 +91,12 @@ static const int kTooltipsDepth    = 201;
 @interface MinecraftViewController (MCLEBridgeEntryPoints)
 - (void)finishDialogWithResult:(MCLEDialogResult)result;
 - (void)navigateBack;
+// World lifecycle entry points used by the LoadOrJoinMenu handlePress
+// bridge. They resolve the list item to a save name (class-extension
+// property, not visible from the C bridge) and hand the request to
+// MCLEGameLoop on the main thread.
+- (void)requestCreateWorld;
+- (void)requestLoadWorldAtIndex:(NSInteger)index;
 @end
 static __weak MinecraftViewController* g_active_vc = nil;
 
@@ -283,15 +292,19 @@ extern "C" void mcle_ios_settings_event_bridge(const char* method, double id, do
         int itemId = (int)value;
         if ([g_current_scene_name isEqualToString:@"LoadOrJoinMenu1080.swf"]) {
             if (listId == 0) {
-                // SavesList. Item 0 = "Create New World" (see
-                // UIScene_LoadOrJoinMenu.cpp JOIN_LOAD_CREATE_BUTTON_
-                // INDEX=0); anything > 0 is a save slot or level
-                // generator. Neither path is functional yet -
-                // the create-world flow needs a level-gen picker
-                // scene, and the load-save flow needs the LCE
-                // save-format reader.
-                NSLog(@"[loadorjoin] saves list press idx=%d (loading path is a follow-up)",
-                      itemId);
+                // SavesList. Item 0 = "Create New World"
+                // (JOIN_LOAD_CREATE_BUTTON_INDEX=0); item > 0 is the save at
+                // savesListNames[itemId-1]. Console routes create through
+                // UIScene_CreateWorldMenu -> CGameNetworkManager::RunNetworkGame
+                // and load through UIScene_LoadMenu; on iOS we shortcut both to
+                // the MCLEGameLoop world lifecycle (create/generate or load).
+                if (itemId == 0) {
+                    NSLog(@"[loadorjoin] create new world");
+                    [g_active_vc requestCreateWorld];
+                } else {
+                    NSLog(@"[loadorjoin] load world idx=%d", itemId - 1);
+                    [g_active_vc requestLoadWorldAtIndex:(NSInteger)itemId - 1];
+                }
             } else if (listId == 1) {
                 // JoinList. iOS has no netcode yet, so this list
                 // stays empty - log in case we get here anyway
@@ -378,6 +391,9 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
 @property (nonatomic) uint32_t lastPadButtons;          // last seen 4J button bitmask, for edge detection
 @property (nonatomic) int menuFocusIndex;               // index into menuButtonConfig
 @property (strong, nonatomic) NSString* currentMenuSwf; // "MainMenu1080.swf", "HelpAndOptionsMenu1080.swf", etc.
+// Save folder names shown in LoadOrJoinMenu's SavesList, in list order.
+// Index 0 is always "Create New World"; entry i>0 maps to savesListNames[i-1].
+@property (strong, nonatomic) NSArray<NSString*>* savesListNames;
 // Array of NSDictionary entries with keys "name" (e.g. "Button1"),
 // "label" (display text), "id" (NSNumber int matching the console's
 // eControl_* enum). Configured per-menu by initXxxButtons methods so
@@ -1732,6 +1748,51 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
     self.menuFocusIndex = 0;
 }
 
+// Enumerates Documents/saves/* directories that contain a .ms bundle.
+// These are the user's worlds shown in LoadOrJoinMenu's SavesList.
+- (NSArray<NSString*>*)listSaveNames {
+    NSArray<NSString*>* docs =
+        NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    if (docs.count == 0) return @[];
+    NSString* savesDir = [docs.firstObject stringByAppendingPathComponent:@"saves"];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSArray<NSString*>* entries = [fm contentsOfDirectoryAtPath:savesDir error:nil];
+    NSMutableArray<NSString*>* out = [NSMutableArray array];
+    for (NSString* entry in entries) {
+        NSString* dir = [savesDir stringByAppendingPathComponent:entry];
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:dir isDirectory:&isDir] || !isDir) continue;
+        NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:nil];
+        for (NSString* f in files) {
+            if ([f hasSuffix:@".ms"]) { [out addObject:entry]; break; }
+        }
+    }
+    return out;
+}
+
+// MCLEBridgeEntryPoints: "Create New World" from SavesList item 0.
+- (void)requestCreateWorld {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        mcle_world_request_create("New World");
+    });
+}
+
+// MCLEBridgeEntryPoints: load savesListNames[index]. Resolved on the main
+// thread because savesListNames is class state.
+- (void)requestLoadWorldAtIndex:(NSInteger)index {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSArray<NSString*>* names = self.savesListNames;
+        if (index < 0 || index >= (NSInteger)names.count) {
+            NSLog(@"[loadorjoin] load index %ld out of range (count=%lu)",
+                  (long)index, (unsigned long)names.count);
+            return;
+        }
+        NSString* levelId = names[(NSUInteger)index];
+        NSLog(@"[loadorjoin] load world %@", levelId);
+        mcle_world_request_load(levelId.UTF8String);
+    });
+}
+
 // Ports UIScene_LoadOrJoinMenu constructor
 // (Common/UI/UIScene_LoadOrJoinMenu.cpp:536+). Two
 // FJ_ButtonList_ListIconLeft controls on stage:
@@ -1828,6 +1889,20 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
         (const uint8_t*)createLabel, strlen(createLabel),
         0.0,
         (const uint8_t*)"", 0);
+
+    // Real worlds from Documents/saves. List index 0 is "Create New World";
+    // save i occupies index (i+1). handlePress maps the index back through
+    // self.savesListNames.
+    self.savesListNames = [self listSaveNames];
+    for (NSUInteger i = 0; i < self.savesListNames.count; ++i) {
+        NSString* nm = self.savesListNames[i];
+        const char* c = nm.UTF8String;
+        ruffle_ios_call_list_add_item(g_ruffle_player,
+            (const uint8_t*)saves, strlen(saves),
+            (const uint8_t*)c, strlen(c),
+            (double)(i + 1),
+            (const uint8_t*)"", 0);
+    }
 
     // Auto-focus via SWF's SetFocus(-1). SavesList has tabIndex=1
     // per LoadOrJoinMenu.as __setTab_SavesList_... so FJ_Document.

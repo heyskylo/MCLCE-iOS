@@ -21,7 +21,7 @@ The app launches straight into the real LCE main menu. Here's what works end-to-
 
 ## What doesn't run yet
 
-- World creation and loading. The save-format reader isn't wired up, so Play Game reaches the world list but can't enter a world. Gameplay is the next rock after the menu tree is done.
+- World creation and loading (partial). The save-format reader is wired up and the world list is live: `LoadOrJoinMenu` enumerates `Documents/saves/*` and selecting a save loads it; "Create New World" generates a fresh world (random seed, Survival, normal terrain) and enters it. The save-to-disk path is still a stub (`StorageManager.SetSaveData`/`SaveSaveData` are no-ops on iOS), so a created world is playable for the session but does not survive a relaunch yet. Wiring that write path up is the next step, then gameplay rendering.
 - Leaderboards, DLC, Skin Select menus. Skeletons queued next, same pattern as LoadOrJoin and HowToPlay.
 - Multiplayer and networking. None of it is in the iOS build yet. On the roadmap but behind gameplay.
 - Tooltips strip at the bottom of each menu. The authored SWF has it, we don't wire it yet.
