@@ -37,9 +37,11 @@ If your device is on an iOS version TrollStore supports (15.0 to 16.6.1, plus a 
 2. AirDrop the `.ipa` to your device or share it via Files
 3. Open in TrollStore and install
 
-## Providing your own LCE assets
+## Runtime assets
 
-The app cannot ship Minecraft content because it is copyrighted by Mojang. You provide your own:
+The build embeds the LCE runtime assets in the IPA under `Minecraft.LCE.app/MCLCEAssets/` and copies them into the app's Documents folder on first launch, so a fresh install is self-contained and needs no manual file drop. The pack itself is not stored in this repository (it is copyrighted Mojang content); CI downloads it from the project's sideload host at build time.
+
+To override any file - or to supply your own assets if the pack is missing - drop replacements into the app's Documents folder:
 
 1. On a PC, extract `MediaWindows64.arc` from your LCE install using [PCK Studio](https://github.com/LCERD/PCK-Studio) or our bundled `scripts/list-arc.py` helper.
 2. Copy every `.swf` from the extracted folder into a single directory. The app will look for them by name. The ones the menu tree currently uses include:

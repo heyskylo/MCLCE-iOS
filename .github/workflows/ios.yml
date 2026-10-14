@@ -22,6 +22,13 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  # Runtime asset pack (menu SWFs, textures, fonts, music, TitleUpdate
+  # content). Served out-of-band from the sideload VPS so the copyrighted
+  # Mojang assets are not committed to this repo. The build downloads it
+  # and embeds it in Minecraft.LCE.app/MCLCEAssets/.
+  MCLCE_ASSETS_URL: https://repo.gayfeet.lol/assets/MinecraftLCE-assets.zip
+
 jobs:
   build:
     name: build (arm64, unsigned)
@@ -96,6 +103,40 @@ jobs:
       - name: Build (Release)
         run: |
           cmake --build build --config Release -- -quiet
+
+      - name: Bundle runtime assets
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Minecraft.Client/iOS/App/Release-iphoneos/Minecraft.LCE.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "App bundle not found at $APP_PATH"
+            find build -name '*.app' -type d
+            exit 1
+          fi
+
+          echo "Downloading runtime asset pack from $MCLCE_ASSETS_URL"
+          curl -fL --retry 5 --retry-delay 3 --retry-all-errors \
+               -o /tmp/mcle-assets.zip "$MCLCE_ASSETS_URL"
+          ls -la /tmp/mcle-assets.zip
+
+          rm -rf /tmp/mcle-assets && mkdir -p /tmp/mcle-assets
+          unzip -q /tmp/mcle-assets.zip -d /tmp/mcle-assets
+          # The pack ships under a single top-level directory
+          # ("Minecraft LCE/"); flatten it into MCLCEAssets/.
+          SRC="$(find /tmp/mcle-assets -maxdepth 1 -mindepth 1 -type d | head -1)"
+          echo "Pack root: $SRC"
+
+          rm -rf "$APP_PATH/MCLCEAssets"
+          mkdir -p "$APP_PATH/MCLCEAssets"
+          cp -R "$SRC/." "$APP_PATH/MCLCEAssets/"
+
+          # Revision marker so the app re-copies into Documents only when
+          # the packaged assets actually change.
+          shasum -a 256 /tmp/mcle-assets.zip | awk '{print $1}' \
+            > "$APP_PATH/MCLCEAssets/ASSETS_VERSION"
+
+          echo "Bundled $(find "$APP_PATH/MCLCEAssets" -type f | wc -l) files"
+          du -sh "$APP_PATH/MCLCEAssets"
 
       - name: Package .ipa
         id: package

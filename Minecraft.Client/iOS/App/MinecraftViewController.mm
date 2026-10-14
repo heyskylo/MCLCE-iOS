@@ -416,26 +416,40 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
 
 @implementation MinecraftViewController
 
-// Locate a user-supplied asset anywhere under the app's Documents
-// folder. INSTALL.md tells users to drop files flat into the root, but
-// people also paste the whole extracted LCE Media tree in, so we check
-// the root first (an explicit override always wins), then the well-known
-// LCE media subfolders, and finally fall back to a recursive walk.
-// Returns nil when the file is genuinely absent.
-- (NSString*)documentPathForFileNamed:(NSString*)fileName {
-    if (!fileName.length) return nil;
+// Roots searched for runtime media, in priority order:
+//   1. The app's Documents folder - a user override always wins.
+//   2. MCLCEAssets/ inside the app bundle - the runtime asset pack the
+//      build embeds (see the CI "Bundle runtime assets" step). Kept as a
+//      fallback so lookups still resolve before installBundledAssetsIfNeeded
+//      has copied everything into Documents.
+- (NSArray<NSString*>*)assetSearchRoots {
+    NSMutableArray<NSString*>* roots = [NSMutableArray array];
     NSString* docs = [NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    if (!docs.length) return nil;
+    if (docs.length) [roots addObject:docs];
+    NSString* res = NSBundle.mainBundle.resourcePath;
+    if (res.length) {
+        NSString* bundled = [res stringByAppendingPathComponent:@"MCLCEAssets"];
+        BOOL isDir = NO;
+        if ([NSFileManager.defaultManager fileExistsAtPath:bundled isDirectory:&isDir] && isDir) {
+            [roots addObject:bundled];
+        }
+    }
+    return roots;
+}
+
+// Locate an asset in any of assetSearchRoots. INSTALL.md tells users to
+// drop files flat into Documents, but people also paste the whole
+// extracted LCE Media tree in, so within each root we check the root
+// itself first, then the well-known LCE media subfolders, and finally
+// fall back to a recursive walk. Returns nil when genuinely absent.
+- (NSString*)documentPathForFileNamed:(NSString*)fileName {
+    if (!fileName.length) return nil;
     NSFileManager* fm = NSFileManager.defaultManager;
 
-    // 1. Documents root - the documented location.
-    NSString* direct = [docs stringByAppendingPathComponent:fileName];
-    if ([fm fileExistsAtPath:direct]) return direct;
-
-    // 2. Well-known LCE media subfolders from the Windows64 arc dump.
-    //    Panorama_Background_*.png / MenuTitle.png live under
-    //    Common/Media/Graphics in the source tree.
+    // Well-known LCE media subfolders from the Windows64 arc dump.
+    // Panorama_Background_*.png / MenuTitle.png live under
+    // Common/Media/Graphics in the source tree.
     NSArray<NSString*>* wellKnown = @[
         @"Common/Media/Graphics",
         @"Common/res/TitleUpdate/res",
@@ -443,23 +457,92 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
         @"Media/Graphics",
         @"Graphics",
     ];
-    for (NSString* sub in wellKnown) {
-        NSString* p = [[docs stringByAppendingPathComponent:sub]
-                       stringByAppendingPathComponent:fileName];
-        if ([fm fileExistsAtPath:p]) return p;
-    }
 
-    // 3. Recursive fallback - whatever nesting the user happened to use.
-    NSDirectoryEnumerator* en = [fm enumeratorAtPath:docs];
-    for (NSString* rel in en) {
-        if ([rel.lastPathComponent caseInsensitiveCompare:fileName] != NSOrderedSame) {
-            continue;
+    for (NSString* root in [self assetSearchRoots]) {
+        // 1. Root - the documented location.
+        NSString* direct = [root stringByAppendingPathComponent:fileName];
+        if ([fm fileExistsAtPath:direct]) return direct;
+
+        // 2. Well-known LCE media subfolders.
+        for (NSString* sub in wellKnown) {
+            NSString* p = [[root stringByAppendingPathComponent:sub]
+                           stringByAppendingPathComponent:fileName];
+            if ([fm fileExistsAtPath:p]) return p;
         }
-        NSString* p = [docs stringByAppendingPathComponent:rel];
-        BOOL isDir = NO;
-        if ([fm fileExistsAtPath:p isDirectory:&isDir] && !isDir) return p;
+
+        // 3. Recursive fallback - whatever nesting was used.
+        NSDirectoryEnumerator* en = [fm enumeratorAtPath:root];
+        for (NSString* rel in en) {
+            if ([rel.lastPathComponent caseInsensitiveCompare:fileName] != NSOrderedSame) {
+                continue;
+            }
+            NSString* p = [root stringByAppendingPathComponent:rel];
+            BOOL isDir = NO;
+            if ([fm fileExistsAtPath:p isDirectory:&isDir] && !isDir) return p;
+        }
     }
     return nil;
+}
+
+// Copy the bundled runtime asset pack into Documents on first launch (or
+// whenever the packaged revision changes). Shipping the assets inside
+// the app means a fresh install is self-contained, but the menu SWFs
+// load each other through relative Loader paths that Ruffle resolves
+// against Documents, so the payload has to be materialised there too.
+// A .mcle_assets_version marker (holding ASSETS_VERSION from the pack)
+// keeps this a one-time cost per asset revision.
+- (void)installBundledAssetsIfNeeded {
+    NSFileManager* fm = NSFileManager.defaultManager;
+    NSString* res = NSBundle.mainBundle.resourcePath;
+    if (!res.length) return;
+    NSString* src = [res stringByAppendingPathComponent:@"MCLCEAssets"];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:src isDirectory:&isDir] || !isDir) return;
+
+    NSString* docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    if (!docs.length) return;
+
+    NSString* version = [NSString stringWithContentsOfFile:
+        [src stringByAppendingPathComponent:@"ASSETS_VERSION"]
+        encoding:NSUTF8StringEncoding error:nil];
+    version = [[version stringByTrimmingCharactersInSet:
+                NSCharacterSet.whitespaceAndNewlineCharacterSet] copy];
+    if (!version.length) version = @"1";
+
+    NSString* marker = [docs stringByAppendingPathComponent:@".mcle_assets_version"];
+    NSString* installed = [NSString stringWithContentsOfFile:marker
+                                                    encoding:NSUTF8StringEncoding error:nil];
+    installed = [installed stringByTrimmingCharactersInSet:
+                 NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if ([installed isEqualToString:version]) return;
+
+    NSLog(@"[MCLE/assets] installing bundled assets (v%@) into %@",
+          version, docs);
+    NSDate* t0 = [NSDate date];
+    NSUInteger files = 0;
+    for (NSString* rel in [fm enumeratorAtPath:src]) {
+        NSString* leaf = rel.lastPathComponent;
+        if ([leaf isEqualToString:@"ASSETS_VERSION"]) continue;
+        if ([leaf isEqualToString:@".DS_Store"]) continue;
+        NSString* s = [src stringByAppendingPathComponent:rel];
+        BOOL d = NO;
+        if (![fm fileExistsAtPath:s isDirectory:&d]) continue;
+        NSString* dst = [docs stringByAppendingPathComponent:rel];
+        if (d) {
+            [fm createDirectoryAtPath:dst withIntermediateDirectories:YES
+                           attributes:nil error:nil];
+            continue;
+        }
+        [fm createDirectoryAtPath:dst.stringByDeletingLastPathComponent
+              withIntermediateDirectories:YES attributes:nil error:nil];
+        if ([fm fileExistsAtPath:dst]) [fm removeItemAtPath:dst error:nil];
+        if ([fm copyItemAtPath:s toPath:dst error:nil]) ++files;
+    }
+    [version writeToFile:marker atomically:YES
+                encoding:NSUTF8StringEncoding error:nil];
+    NSLog(@"[MCLE/assets] installed %lu files in %.1fs",
+          (unsigned long)files, -[t0 timeIntervalSinceNow]);
 }
 
 // Find a SWF to play. Preference order:
@@ -562,6 +645,11 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
         }
     }
 
+    // Embed the packaged runtime asset pack into Documents so a fresh
+    // install is self-contained. Must run before the platform-skin alias
+    // and any SWF / texture / font lookup below.
+    [self installBundledAssetsIfNeeded];
+
     // Lay down the platform-skin alias before any SWF parses
     // imports. Without this, ToolTips1080.swf (and any other
     // 1080p scene that imports platformskinHD.swf) 404s on the
@@ -601,7 +689,7 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
     // pickSplash.
     NSString* docsDir = [NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    NSString* splashesPath = [docsDir stringByAppendingPathComponent:@"splashes.txt"];
+    NSString* splashesPath = [self documentPathForFileNamed:@"splashes.txt"];
     NSString* contents = [NSString stringWithContentsOfFile:splashesPath
                                                    encoding:NSUTF8StringEncoding
                                                       error:nil];
@@ -617,7 +705,8 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
     // by name. We already load it for Ruffle via ruffle_ios_stage_
     // device_font; UIKit has its own font registry that needs the
     // file separately. Font file is Mojang Font_7.ttf in Documents.
-    NSString* fontPath = [docsDir stringByAppendingPathComponent:@"Mojang Font_7.ttf"];
+    NSString* fontPath = [self documentPathForFileNamed:@"Mojang Font_7.ttf"]
+        ?: [self documentPathForFileNamed:@"Mojangles7.ttf"];
     if ([[NSFileManager defaultManager] fileExistsAtPath:fontPath]) {
         CFURLRef url = (__bridge_retained CFURLRef)[NSURL fileURLWithPath:fontPath];
         CFErrorRef err = NULL;
