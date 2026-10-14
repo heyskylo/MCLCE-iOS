@@ -19,6 +19,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: build (arm64, unsigned)
@@ -120,6 +123,22 @@ jobs:
           path: artifacts/Minecraft.LCE.ipa
           if-no-files-found: error
           retention-days: 14
+
+      # Publishes (or updates) a "latest" release with a stable asset URL that
+      # the sideload repo VPS pulls from:
+      #   https://github.com/heyskylo/MCLCE-iOS/releases/latest/download/Minecraft.LCE.ipa
+      - name: Publish release (latest)
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Minecraft LCE (latest build)
+          body: |
+            Automated unsigned build from ${{ github.sha }}.
+
+            Install via the sideload repo: https://repo.gayfeet.lol
+          files: artifacts/Minecraft.LCE.ipa
+          make_latest: true
 
       - name: Upload .app bundle (debug, unzipped)
         if: failure() || github.event_name == 'workflow_dispatch'
