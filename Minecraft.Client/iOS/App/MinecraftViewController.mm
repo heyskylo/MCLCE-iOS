@@ -416,6 +416,52 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
 
 @implementation MinecraftViewController
 
+// Locate a user-supplied asset anywhere under the app's Documents
+// folder. INSTALL.md tells users to drop files flat into the root, but
+// people also paste the whole extracted LCE Media tree in, so we check
+// the root first (an explicit override always wins), then the well-known
+// LCE media subfolders, and finally fall back to a recursive walk.
+// Returns nil when the file is genuinely absent.
+- (NSString*)documentPathForFileNamed:(NSString*)fileName {
+    if (!fileName.length) return nil;
+    NSString* docs = [NSSearchPathForDirectoriesInDomains(
+        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    if (!docs.length) return nil;
+    NSFileManager* fm = NSFileManager.defaultManager;
+
+    // 1. Documents root - the documented location.
+    NSString* direct = [docs stringByAppendingPathComponent:fileName];
+    if ([fm fileExistsAtPath:direct]) return direct;
+
+    // 2. Well-known LCE media subfolders from the Windows64 arc dump.
+    //    Panorama_Background_*.png / MenuTitle.png live under
+    //    Common/Media/Graphics in the source tree.
+    NSArray<NSString*>* wellKnown = @[
+        @"Common/Media/Graphics",
+        @"Common/res/TitleUpdate/res",
+        @"Common/res",
+        @"Media/Graphics",
+        @"Graphics",
+    ];
+    for (NSString* sub in wellKnown) {
+        NSString* p = [[docs stringByAppendingPathComponent:sub]
+                       stringByAppendingPathComponent:fileName];
+        if ([fm fileExistsAtPath:p]) return p;
+    }
+
+    // 3. Recursive fallback - whatever nesting the user happened to use.
+    NSDirectoryEnumerator* en = [fm enumeratorAtPath:docs];
+    for (NSString* rel in en) {
+        if ([rel.lastPathComponent caseInsensitiveCompare:fileName] != NSOrderedSame) {
+            continue;
+        }
+        NSString* p = [docs stringByAppendingPathComponent:rel];
+        BOOL isDir = NO;
+        if ([fm fileExistsAtPath:p isDirectory:&isDir] && !isDir) return p;
+    }
+    return nil;
+}
+
 // Find a SWF to play. Preference order:
 //   1. Documents/MainMenu1080.swf  (user-supplied via Files app)
 //   2. Documents/*.swf             (anything the user dropped in)
@@ -426,10 +472,11 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
                              inDomains:NSUserDomainMask].firstObject;
     NSString* docsPath = docs.path;
 
-    // Preferred explicit filename: MainMenu1080.swf.
+    // Preferred explicit filename: MainMenu1080.swf. Resolved through
+    // documentPathForFileNamed: so a nested LCE tree also works.
     if (docsPath.length) {
-        NSString* preferred = [docsPath stringByAppendingPathComponent:@"MainMenu1080.swf"];
-        if ([fm fileExistsAtPath:preferred]) return preferred;
+        NSString* preferred = [self documentPathForFileNamed:@"MainMenu1080.swf"];
+        if (preferred) return preferred;
 
         // Next, scan the Documents root for any .swf.
         NSArray<NSString*>* entries = [fm contentsOfDirectoryAtPath:docsPath error:nil];
@@ -922,8 +969,11 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
         // keyed by class name - this mirrors 4J's Iggy XUI texture-
         // import mechanism where skin_Minecraft.xui maps AS3 class
         // names (Panorama_Background_S etc.) to external PNG paths.
-        NSString* docs = [NSSearchPathForDirectoriesInDomains(
-            NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        //
+        // The PNGs are resolved through documentPathForFileNamed: so a
+        // flat drop (INSTALL.md's documented layout) and a full nested
+        // LCE Media tree both work. If they are absent the panorama and
+        // logo layers simply render blank.
         // XUI import scale matches skin_Minecraft.xui <Scale> elements.
         // Panorama_Background_S/N carry Scale=5.0 there so the 820x144
         // tile renders as 4100x720; without that, two tiles side-by-side
@@ -938,11 +988,11 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
             NSString* className = entry[0];
             float sx = [entry[1] floatValue];
             float sy = [entry[2] floatValue];
-            NSString* pngPath = [docs stringByAppendingPathComponent:
+            NSString* pngPath = [self documentPathForFileNamed:
                                  [className stringByAppendingString:@".png"]];
-            NSData* pngData = [NSData dataWithContentsOfFile:pngPath];
+            NSData* pngData = pngPath.length ? [NSData dataWithContentsOfFile:pngPath] : nil;
             if (!pngData.length) {
-                NSLog(@"[MinecraftVC] XUI %@ missing at %@", className, pngPath);
+                NSLog(@"[MinecraftVC] XUI %@ missing (searched Documents)", className);
                 continue;
             }
             int rc = ruffle_ios_register_xui_bitmap(
@@ -1034,10 +1084,10 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
             float sy = [entry[3] floatValue];
             float tx = [entry[4] floatValue];
             float ty = [entry[5] floatValue];
-            NSString* path = [docs stringByAppendingPathComponent:swfName];
-            NSData* data = [NSData dataWithContentsOfFile:path];
+            NSString* path = [self documentPathForFileNamed:swfName];
+            NSData* data = path.length ? [NSData dataWithContentsOfFile:path] : nil;
             if (!data.length) {
-                NSLog(@"[MinecraftVC] %@ missing at %@", swfName, path);
+                NSLog(@"[MinecraftVC] %@ missing (searched Documents)", swfName);
                 continue;
             }
             NSString* url = [NSString stringWithFormat:@"file://%@",
@@ -1983,12 +2033,10 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
     // ENTER/ESCAPE only trigger the dialog's nav handler. The
     // underlying scene stays alive at depth 0 the whole time so
     // it reappears instantly on dismiss without a reload.
-    NSString* docsPath = [NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    NSString* path = [docsPath stringByAppendingPathComponent:@"MessageBox1080.swf"];
-    NSData* data = [NSData dataWithContentsOfFile:path];
+    NSString* path = [self documentPathForFileNamed:@"MessageBox1080.swf"];
+    NSData* data = path.length ? [NSData dataWithContentsOfFile:path] : nil;
     if (!data.length) {
-        NSLog(@"[dialog] MessageBox1080.swf not found at %@", path);
+        NSLog(@"[dialog] MessageBox1080.swf not found (searched Documents)");
         g_pending_dialog = nil;
         ruffle_ios_set_xui_sibling_visible_at_depth(g_ruffle_player, kDimDepth, 0);
         if (callback) callback(MCLEDialogResultCancelled);
@@ -2194,12 +2242,10 @@ extern "C" unsigned long long mcle_swf_total_fill_bitmaps(void);
 - (void)transitionToMenuNamed:(NSString*)swfName {
     extern PlayerHandle* g_ruffle_player;
     if (!g_ruffle_player) return;
-    NSString* docsPath = [NSSearchPathForDirectoriesInDomains(
-        NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    NSString* path = [docsPath stringByAppendingPathComponent:swfName];
-    NSData* data = [NSData dataWithContentsOfFile:path];
+    NSString* path = [self documentPathForFileNamed:swfName];
+    NSData* data = path.length ? [NSData dataWithContentsOfFile:path] : nil;
     if (!data.length) {
-        NSLog(@"[MinecraftVC] transition: %@ not found at %@", swfName, path);
+        NSLog(@"[MinecraftVC] transition: %@ not found (searched Documents)", swfName);
         return;
     }
     NSString* url = [NSString stringWithFormat:@"file://%@",

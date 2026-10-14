@@ -48,12 +48,18 @@ The app cannot ship Minecraft content because it is copyrighted by Mojang. You p
    - `LoadOrJoinMenu1080.swf`, `HowToPlayMenu1080.swf`, `LeaderboardMenu1080.swf`, `DLCMainMenu1080.swf`, `SkinSelectMenu1080.swf`
    - `MessageBox1080.swf`, `MenuBackground1080.swf`, `Panorama1080.swf`, `ToolTips1080.swf`, `ComponentLogo1080.swf`
    - The base skin set: `skinHD.swf`, `skinHDGraphics.swf`, `skinHDLabels.swf`, plus `skinHDWin.swf` (this last one is what the controller-button tooltip glyphs come from on the Windows64 dump; the app aliases it as `platformskinHD.swf` automatically on first launch).
-3. On the iPhone, open the **Files** app.
-4. Navigate to **On My iPhone** then the **Minecraft LCE** folder (the app creates it the first time you launch).
-5. Drop the SWFs in.
-6. Relaunch the app. It looks in this folder on startup and uses whatever it finds.
+3. Copy these three textures as well. The menu **panorama background** and the **title logo** are not baked into the SWFs - the SWFs reference them by class name and the app feeds them in from PNGs on disk. They live under `Media/Graphics` (or `Common/Media/Graphics`) in the dump. Without them the background and logo render blank:
+   - `Panorama_Background_S.png` (820x144)
+   - `Panorama_Background_N.png` (820x144)
+   - `MenuTitle.png` (857x207 - the 1080p art; if you only have the 571x138 720p copy, scale it 1.5x)
+4. On the iPhone, open the **Files** app.
+5. Navigate to **On My iPhone** then the **Minecraft LCE** folder (the app creates it the first time you launch).
+6. Drop the SWFs and the three PNGs in.
+7. Relaunch the app. It looks in this folder on startup and uses whatever it finds.
 
-Missing SWFs degrade gracefully: a missing `Panorama1080.swf` just leaves the menu background blank, missing `ToolTips1080.swf` hides the bottom hint strip, etc. The minimum to see anything is `MainMenu1080.swf`.
+The app resolves files from the root of the folder first, then from the usual LCE media subfolders (`Common/Media/Graphics`, `Common/res`, ...), and finally does a recursive search - so dropping the whole extracted tree in also works, not just a flat copy.
+
+Missing files degrade gracefully: a missing `Panorama1080.swf` (or its textures) just leaves the menu background blank, missing `ToolTips1080.swf` hides the bottom hint strip, etc. The minimum to see anything is `MainMenu1080.swf`.
 
 ## After the first install: enable Developer Mode
 

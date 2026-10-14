@@ -40,6 +40,11 @@ PlayerHandle* g_ruffle_player = NULL;
         @"If that is not present, the app will play the first .swf it\n"
         @"finds here. Without any SWF it falls back to a tiny built-in\n"
         @"test rectangle.\n\n"
+        @"For the panorama background and title logo, also drop\n"
+        @"Panorama_Background_S.png, Panorama_Background_N.png and\n"
+        @"MenuTitle.png here (they live under Media/Graphics in the\n"
+        @"LCE dump). Without them those two layers render blank.\n"
+        @"Files may also sit in subfolders - the app searches them.\n\n"
         @"See INSTALL.md in the repo for how to extract SWFs from an LCE\n"
         @"install using scripts/list-arc.py or PCK Studio.\n";
     NSURL* readmeURL = [docs URLByAppendingPathComponent:@"README.txt"];
